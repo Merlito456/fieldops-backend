@@ -16,8 +16,8 @@ app.use(express.json({ limit: '50mb' }));
 // Database Connection
 // Use the Transaction Pooler string provided by the user. 
 // Note: ?pgbouncer=true is appended to ensure correct transaction handling.
-const USER_CONNECTION_STRING = 'postgresql://postgres.jgklqdsdsblahsfshdop:NsA8HswFPjtngsv0@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres';
-const connectionString = process.env.DATABASE_URL || `${USER_CONNECTION_STRING}?pgbouncer=true`;
+const DEFAULT_URL = 'postgresql://postgres.jgklqdsdsblahsfshdop:NsA8HswFPjtngsv0@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = process.env.DATABASE_URL || `${DEFAULT_URL}?pgbouncer=true`;
 
 const pool = new Pool({
   connectionString,
@@ -25,9 +25,9 @@ const pool = new Pool({
     rejectUnauthorized: false
   },
   // POOLER OPTIMIZATIONS
-  max: 15,                     // Max connections in the pool
-  idleTimeoutMillis: 10000,    // Close idle clients after 10 seconds
-  connectionTimeoutMillis: 5000 // Return error if connection takes > 5s
+  max: 20,                     // Max connections in the pool
+  idleTimeoutMillis: 30000,    // Close idle clients after 30 seconds
+  connectionTimeoutMillis: 10000 // Return error if connection takes > 10s
 });
 
 pool.on('error', (err) => {
@@ -100,11 +100,10 @@ async function initDatabase() {
     `);
 
     isDbConnected = true;
-    console.log('✅ PostgreSQL Node is ONLINE.');
+    console.log('✅ PostgreSQL Hub is ACTIVE.');
   } catch (err) {
     isDbConnected = false;
     console.error('❌ DB_INIT_FAILURE:', err.message);
-    console.error('💡 Ensure DATABASE_URL is correct and includes ?pgbouncer=true');
   } finally {
     if (client) client.release();
   }
@@ -151,6 +150,19 @@ const mapSite = (s) => ({
   keyHistory: s.key_history || []
 });
 
+const mapTask = (t) => ({
+  id: t.id,
+  title: t.title,
+  description: t.description,
+  siteId: t.site_id,
+  assignedTo: t.assigned_to,
+  status: t.status,
+  priority: t.priority,
+  type: t.type,
+  scheduledDate: t.scheduled_date
+});
+
+// AUTH
 app.post('/api/auth/vendor/register', async (req, res) => {
   const v = req.body;
   try {
@@ -178,6 +190,7 @@ app.post('/api/auth/vendor/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// SITES
 app.get('/api/sites', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM sites ORDER BY name ASC');
@@ -208,6 +221,7 @@ app.put('/api/sites/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ACCESS
 app.post('/api/access/request', async (req, res) => {
   const { siteId, ...visitorData } = req.body;
   const visitor = { ...visitorData, id: `REQ-${Date.now()}`, checkInTime: new Date().toISOString() };
@@ -257,6 +271,7 @@ app.post('/api/access/checkout/:siteId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// KEYS
 app.post('/api/keys/request', async (req, res) => {
   const { siteId, ...logData } = req.body;
   const keyLog = { ...logData, id: `KREQ-${Date.now()}`, borrowTime: new Date().toISOString() };
@@ -299,13 +314,11 @@ app.post('/api/keys/return/:siteId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// TASKS
 app.get('/api/tasks', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM tasks');
-    res.json(result.rows.map(t => ({
-      id: t.id, title: t.title, description: t.description, siteId: t.site_id, assignedTo: t.assigned_to, 
-      status: t.status, priority: t.priority, type: t.type, scheduled_date: t.scheduled_date
-    })));
+    const result = await pool.query('SELECT * FROM tasks ORDER BY scheduled_date ASC');
+    res.json(result.rows.map(mapTask));
   } catch (err) { res.json([]); }
 });
 
