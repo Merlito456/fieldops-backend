@@ -203,7 +203,7 @@ app.post('/api/access/checkin/:siteId', async (req, res) => {
 });
 
 app.post('/api/access/checkout/:siteId', async (req, res) => {
-  const { exitPhoto, name, time } = req.body;
+  const { exitPhoto, name, time, ...rest } = req.body;
   try {
     const siteResult = await pool.query('SELECT current_visitor, visitor_history FROM sites WHERE id = $1', [req.params.siteId]);
     const current = siteResult.rows[0].current_visitor;
@@ -214,6 +214,7 @@ app.post('/api/access/checkout/:siteId', async (req, res) => {
       exitPhoto, 
       rocLogoutName: name, 
       rocLogoutTime: time, 
+      ...rest,
       checkOutTime: new Date().toISOString() 
     };
     
