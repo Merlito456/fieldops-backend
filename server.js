@@ -92,6 +92,20 @@ initDatabase();
 
 app.get('/api/health', (req, res) => res.json({ status: 'operational' }));
 
+// Helper to map DB vendor row to frontend camelCase VendorProfile
+const mapVendor = (v) => ({
+  id: v.id,
+  username: v.username,
+  fullName: v.full_name,
+  company: v.company,
+  contactNumber: v.contact_number,
+  photo: v.photo_url,
+  idNumber: v.id_number,
+  specialization: v.specialization,
+  verified: true,
+  createdAt: v.created_at
+});
+
 // --- VENDOR AUTH (Case Insensitive) ---
 app.post('/api/auth/vendor/register', async (req, res) => {
   const v = req.body;
@@ -101,7 +115,7 @@ app.post('/api/auth/vendor/register', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [v.id, (v.username || '').toUpperCase(), (v.password || '').toUpperCase(), v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
     );
-    res.json(result.rows[0]);
+    res.json(mapVendor(result.rows[0]));
   } catch (err) { 
     console.error('Registration error:', err.message);
     res.status(500).json({ error: err.message }); 
@@ -114,12 +128,9 @@ app.post('/api/auth/vendor/login', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM vendors WHERE username = $1 AND password = $2', [username.toUpperCase(), password.toUpperCase()]);
     if (result.rows.length === 0) {
-      // Fallback: Check if credentials match exactly without upper case (for legacy support during dev)
-      const fallback = await pool.query('SELECT * FROM vendors WHERE username = $1 AND password = $2', [username, password]);
-      if (fallback.rows.length > 0) return res.json(fallback.rows[0]);
       return res.status(401).json({ error: 'Invalid Credentials' });
     }
-    res.json(result.rows[0]);
+    res.json(mapVendor(result.rows[0]));
   } catch (err) { 
     console.error('Login error:', err.message);
     res.status(500).json({ error: err.message }); 
