@@ -143,7 +143,7 @@ app.post('/api/auth/vendor/login', async (req, res) => {
       company: vendor.company,
       contactNumber: vendor.contact_number,
       photo: vendor.photo_url,
-      idNumber: vendor.id_number,
+      id_number: vendor.id_number,
       specialization: vendor.specialization,
       verified: true,
       createdAt: vendor.created_at
@@ -151,6 +151,143 @@ app.post('/api/auth/vendor/login', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// --- OPERATIONAL ENDPOINTS (ACCESS & KEYS) ---
+
+app.post('/api/access/request', async (req, res) => {
+  const { siteId, ...visitorData } = req.body;
+  const pendingVisitor = { 
+    ...visitorData, 
+    id: `REQ-${Date.now()}`, 
+    checkInTime: new Date().toISOString() 
+  };
+  try {
+    await pool.query(
+      'UPDATE sites SET pending_visitor = $1, access_authorized = FALSE WHERE id = $2',
+      [JSON.stringify(pendingVisitor), siteId]
+    );
+    res.json({ success: true, pendingVisitor });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/access/authorize/:siteId', async (req, res) => {
+  try {
+    await pool.query('UPDATE sites SET access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/access/cancel/:siteId', async (req, res) => {
+  try {
+    await pool.query('UPDATE sites SET pending_visitor = NULL, access_authorized = FALSE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/access/checkin/:siteId', async (req, res) => {
+  try {
+    const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
+    const visitor = siteResult.rows[0].pending_visitor;
+    const currentVisitor = { 
+      ...visitor, 
+      id: `VIS-${Date.now()}`, 
+      checkInTime: new Date().toISOString() 
+    };
+    await pool.query(
+      'UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2',
+      [JSON.stringify(currentVisitor), req.params.siteId]
+    );
+    res.json({ success: true, currentVisitor });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/access/checkout/:siteId', async (req, res) => {
+  const { exitPhoto, name, time } = req.body;
+  try {
+    const siteResult = await pool.query('SELECT current_visitor, visitor_history FROM sites WHERE id = $1', [req.params.siteId]);
+    const current = siteResult.rows[0].current_visitor;
+    const history = siteResult.rows[0].visitor_history || [];
+    
+    const finishedVisitor = { 
+      ...current, 
+      exitPhoto, 
+      rocLogoutName: name, 
+      rocLogoutTime: time, 
+      checkOutTime: new Date().toISOString() 
+    };
+    
+    await pool.query(
+      'UPDATE sites SET current_visitor = NULL, visitor_history = $1 WHERE id = $2',
+      [JSON.stringify([finishedVisitor, ...history].slice(0, 50)), req.params.siteId]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/keys/request', async (req, res) => {
+  const { siteId, ...logData } = req.body;
+  const pendingKeyLog = { 
+    ...logData, 
+    id: `KEYREQ-${Date.now()}`, 
+    borrowTime: new Date().toISOString() 
+  };
+  try {
+    await pool.query(
+      'UPDATE sites SET pending_key_log = $1, key_access_authorized = FALSE WHERE id = $2',
+      [JSON.stringify(pendingKeyLog), siteId]
+    );
+    res.json({ success: true, pendingKeyLog });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/keys/authorize/:siteId', async (req, res) => {
+  try {
+    await pool.query('UPDATE sites SET key_access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/keys/cancel/:siteId', async (req, res) => {
+  try {
+    await pool.query('UPDATE sites SET pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/keys/confirm/:siteId', async (req, res) => {
+  try {
+    const siteResult = await pool.query('SELECT pending_key_log FROM sites WHERE id = $1', [req.params.siteId]);
+    const pending = siteResult.rows[0].pending_key_log;
+    const currentKeyLog = { ...pending, id: `KEY-${Date.now()}` };
+    
+    await pool.query(
+      "UPDATE sites SET key_status = 'Borrowed', current_key_log = $1, pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $2",
+      [JSON.stringify(currentKeyLog), req.params.siteId]
+    );
+    res.json({ success: true, currentKeyLog });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/keys/return/:siteId', async (req, res) => {
+  const { returnPhoto } = req.body;
+  try {
+    const siteResult = await pool.query('SELECT current_key_log, key_history FROM sites WHERE id = $1', [req.params.siteId]);
+    const current = siteResult.rows[0].current_key_log;
+    const history = siteResult.rows[0].key_history || [];
+    
+    const finishedLog = { 
+      ...current, 
+      returnTime: new Date().toISOString(), 
+      returnPhoto 
+    };
+    
+    await pool.query(
+      "UPDATE sites SET key_status = 'Available', current_key_log = NULL, key_history = $1 WHERE id = $2",
+      [JSON.stringify([finishedLog, ...history].slice(0, 50)), req.params.siteId]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // --- SITE ENDPOINTS ---
@@ -202,20 +339,6 @@ app.put('/api/sites/:id', async (req, res) => {
       [s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact, s.nextMaintenanceDate, req.params.id]
     );
     res.json(s);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/api/access/authorize/:siteId', async (req, res) => {
-  try {
-    await pool.query('UPDATE sites SET access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post('/api/keys/authorize/:siteId', async (req, res) => {
-  try {
-    await pool.query('UPDATE sites SET key_access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
-    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
