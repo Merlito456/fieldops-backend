@@ -29,7 +29,6 @@ async function initDatabase() {
   try {
     client = await pool.connect();
     
-    // Updated schema to include next_maintenance_date to support forecasting
     await client.query(`
       CREATE TABLE IF NOT EXISTS sites (
         id TEXT PRIMARY KEY,
@@ -87,6 +86,75 @@ async function initDatabase() {
 
 initDatabase();
 
+// --- SYSTEM DIAGNOSTICS ---
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'operational', 
+    timestamp: new Date().toISOString(),
+    node: process.env.NODE_ENV || 'production'
+  });
+});
+
+// --- VENDOR AUTH ENDPOINTS ---
+
+app.post('/api/auth/vendor/register', async (req, res) => {
+  const v = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO vendors (id, username, password, full_name, company, contact_number, photo_url, id_number, specialization) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+       RETURNING *`,
+      [v.id, v.username, v.password, v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
+    );
+    const vendor = result.rows[0];
+    res.json({
+      id: vendor.id,
+      username: vendor.username,
+      fullName: vendor.full_name,
+      company: vendor.company,
+      contactNumber: vendor.contact_number,
+      photo: vendor.photo_url,
+      idNumber: vendor.id_number,
+      specialization: vendor.specialization,
+      verified: true,
+      createdAt: vendor.created_at
+    });
+  } catch (err) {
+    console.error('Registration Error:', err.message);
+    res.status(500).json({ error: err.message.includes('unique constraint') ? 'Username already taken' : err.message });
+  }
+});
+
+app.post('/api/auth/vendor/login', async (req, res) => {
+  const { username, password } = req.body;
+  try {
+    const result = await pool.query(
+      'SELECT * FROM vendors WHERE username = $1 AND password = $2',
+      [username, password]
+    );
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    const vendor = result.rows[0];
+    res.json({
+      id: vendor.id,
+      username: vendor.username,
+      fullName: vendor.full_name,
+      company: vendor.company,
+      contactNumber: vendor.contact_number,
+      photo: vendor.photo_url,
+      idNumber: vendor.id_number,
+      specialization: vendor.specialization,
+      verified: true,
+      createdAt: vendor.created_at
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SITE ENDPOINTS ---
+
 const mapSite = (s) => ({
   id: s.id,
   name: s.name,
@@ -104,7 +172,6 @@ const mapSite = (s) => ({
   pendingKeyLog: s.pending_key_log,
   currentKeyLog: s.current_key_log,
   keyHistory: s.key_history || [],
-  // Added mapping for nextMaintenanceDate
   nextMaintenanceDate: s.next_maintenance_date
 });
 
@@ -118,7 +185,6 @@ app.get('/api/sites', async (req, res) => {
 app.post('/api/sites', async (req, res) => {
   const s = req.body;
   try {
-    // Included next_maintenance_date in insertion query
     await pool.query(
       `INSERT INTO sites (id, name, type, address, gps_coordinates, caretaker, caretaker_contact, next_maintenance_date) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -131,7 +197,6 @@ app.post('/api/sites', async (req, res) => {
 app.put('/api/sites/:id', async (req, res) => {
   const s = req.body;
   try {
-    // Included next_maintenance_date in update query
     await pool.query(
       `UPDATE sites SET name=$1, type=$2, address=$3, gps_coordinates=$4, caretaker=$5, caretaker_contact=$6, next_maintenance_date=$7 WHERE id=$8`,
       [s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact, s.nextMaintenanceDate, req.params.id]
@@ -161,7 +226,6 @@ app.get('/api/tasks', async (req, res) => {
   } catch (err) { res.json([]); }
 });
 
-// Serve frontend for production
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
