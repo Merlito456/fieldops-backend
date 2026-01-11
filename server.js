@@ -1,3 +1,4 @@
+
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -5,31 +6,42 @@ const app = express();
 
 /**
  * FIELDOPS PRO: POSTGRESQL BACKEND
- * Connection: Supabase Direct (Port 5432)
+ * CONNECTION: Supabase Transaction Pooler (IPv4 / Port 6543)
+ * Why: Resolves ENETUNREACH errors on Render and optimizes connection limits.
  */
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Database Connection
-// Put your connection string in the DATABASE_URL environment variable on Render
-const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:ViHYbfjhTweSgivZ@db.jgklqdsdsblahsfshdop.supabase.co:5432/postgres';
+// Use the Transaction Pooler string provided by the user. 
+// Note: ?pgbouncer=true is appended to ensure correct transaction handling.
+const USER_CONNECTION_STRING = 'postgresql://postgres.jgklqdsdsblahsfshdop:NsA8HswFPjtngsv0@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = process.env.DATABASE_URL || `${USER_CONNECTION_STRING}?pgbouncer=true`;
 
 const pool = new Pool({
   connectionString,
   ssl: {
     rejectUnauthorized: false
-  }
+  },
+  // POOLER OPTIMIZATIONS
+  max: 15,                     // Max connections in the pool
+  idleTimeoutMillis: 10000,    // Close idle clients after 10 seconds
+  connectionTimeoutMillis: 5000 // Return error if connection takes > 5s
 });
 
 pool.on('error', (err) => {
-  console.error('❌ Unexpected error on idle client', err);
+  console.error('❌ Database Pool Error:', err.message);
 });
 
+let isDbConnected = false;
+
 async function initDatabase() {
-  const client = await pool.connect();
+  console.log('📡 Initializing Database via Transaction Pooler...');
+  let client;
   try {
-    console.log('🔗 Connected to PostgreSQL Hub.');
+    client = await pool.connect();
+    console.log('🔗 Connection established to Supabase Hub.');
     
     // Create Tables with PostgreSQL Syntax
     await client.query(`
@@ -45,9 +57,7 @@ async function initDatabase() {
         specialization TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
-    `);
 
-    await client.query(`
       CREATE TABLE IF NOT EXISTS sites (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -75,9 +85,7 @@ async function initDatabase() {
         access_authorized BOOLEAN DEFAULT FALSE,
         key_access_authorized BOOLEAN DEFAULT FALSE
       );
-    `);
 
-    await client.query(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -91,11 +99,14 @@ async function initDatabase() {
       );
     `);
 
-    console.log('✅ PostgreSQL Schema Verified.');
+    isDbConnected = true;
+    console.log('✅ PostgreSQL Node is ONLINE.');
   } catch (err) {
-    console.error('❌ Database Initialization Failed:', err.message);
+    isDbConnected = false;
+    console.error('❌ DB_INIT_FAILURE:', err.message);
+    console.error('💡 Ensure DATABASE_URL is correct and includes ?pgbouncer=true');
   } finally {
-    client.release();
+    if (client) client.release();
   }
 }
 
@@ -104,10 +115,14 @@ initDatabase();
 // --- API ROUTES ---
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: "ONLINE", provider: "POSTGRESQL", timestamp: new Date().toISOString() });
+  res.json({ 
+    status: "ONLINE", 
+    db_connected: isDbConnected,
+    mode: "TRANSACTION_POOLER_V4",
+    timestamp: new Date().toISOString() 
+  });
 });
 
-// Mapping helper for Frontend camelCase
 const mapSite = (s) => ({
   id: s.id,
   name: s.name,
@@ -258,13 +273,6 @@ app.post('/api/keys/authorize/:siteId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/keys/cancel/:siteId', async (req, res) => {
-  try {
-    await pool.query('UPDATE sites SET pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $1', [req.params.siteId]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 app.post('/api/keys/confirm/:siteId', async (req, res) => {
   try {
     const result = await pool.query('SELECT pending_key_log FROM sites WHERE id = $1', [req.params.siteId]);
@@ -296,7 +304,7 @@ app.get('/api/tasks', async (req, res) => {
     const result = await pool.query('SELECT * FROM tasks');
     res.json(result.rows.map(t => ({
       id: t.id, title: t.title, description: t.description, siteId: t.site_id, assignedTo: t.assigned_to, 
-      status: t.status, priority: t.priority, type: t.type, scheduledDate: t.scheduled_date
+      status: t.status, priority: t.priority, type: t.type, scheduled_date: t.scheduled_date
     })));
   } catch (err) { res.json([]); }
 });
@@ -316,5 +324,5 @@ app.post('/api/tasks', async (req, res) => {
 app.get('/api/inventory', (req, res) => res.json([{ id: 'MAT-001', name: 'Cat6 Shielded Cable', code: 'STP-CAT6', category: 'Cable', currentStock: 18 }, { id: 'MAT-002', name: 'SFP+ Transceiver', code: 'SFP-10G-LR', category: 'Hardware', currentStock: 3 }]));
 app.get('/api/officers', (req, res) => res.json([{ id: 'FO-JCR', name: 'Engr. John Carlo Rabanes, ECE', employeeId: 'ECE-2024', department: 'Technical', isActive: true }]));
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`FIELDOPS PRO API (POSTGRES): ON PORT ${PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`FIELDOPS PRO API (POOLER): ON PORT ${PORT}`));
