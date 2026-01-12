@@ -93,27 +93,32 @@ initDatabase();
 app.get('/api/health', (req, res) => res.json({ status: 'operational' }));
 
 // Helper to map DB vendor row to frontend camelCase VendorProfile
-const mapVendor = (v) => ({
-  id: v.id,
-  username: v.username,
-  fullName: v.full_name,
-  company: v.company,
-  contactNumber: v.contact_number,
-  photo: v.photo_url,
-  idNumber: v.id_number,
-  specialization: v.specialization,
-  verified: true,
-  createdAt: v.created_at
-});
+const mapVendor = (v) => {
+  if (!v) return null;
+  return {
+    id: v.id,
+    username: v.username,
+    fullName: v.full_name,
+    company: v.company,
+    contactNumber: v.contact_number,
+    photo: v.photo_url,
+    idNumber: v.id_number,
+    specialization: v.specialization,
+    verified: true,
+    createdAt: v.created_at
+  };
+};
 
 // --- VENDOR AUTH (Case Insensitive) ---
 app.post('/api/auth/vendor/register', async (req, res) => {
   const v = req.body;
   try {
+    const username = (v.username || '').trim().toUpperCase();
+    const password = (v.password || '').trim().toUpperCase();
     const result = await pool.query(
       `INSERT INTO vendors (id, username, password, full_name, company, contact_number, photo_url, id_number, specialization) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [v.id, (v.username || '').toUpperCase(), (v.password || '').toUpperCase(), v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
+      [v.id, username, password, v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
     );
     res.json(mapVendor(result.rows[0]));
   } catch (err) { 
@@ -125,15 +130,30 @@ app.post('/api/auth/vendor/register', async (req, res) => {
 app.post('/api/auth/vendor/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  
+  const upUsername = username.trim().toUpperCase();
+  const upPassword = password.trim().toUpperCase();
+
   try {
-    const result = await pool.query('SELECT * FROM vendors WHERE username = $1 AND password = $2', [username.toUpperCase(), password.toUpperCase()]);
+    console.log(`[AUTH] Login attempt for user: ${upUsername}`);
+    
+    // Robust case-insensitive comparison using UPPER() at DB level
+    const result = await pool.query(
+      'SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', 
+      [upUsername, upPassword]
+    );
+    
     if (result.rows.length === 0) {
+      console.warn(`[AUTH] Failed login for user: ${upUsername}`);
       return res.status(401).json({ error: 'Invalid Credentials' });
     }
-    res.json(mapVendor(result.rows[0]));
+    
+    const vendor = mapVendor(result.rows[0]);
+    console.log(`[AUTH] Successful login: ${upUsername} (${vendor.id})`);
+    res.json(vendor);
   } catch (err) { 
-    console.error('Login error:', err.message);
-    res.status(500).json({ error: err.message }); 
+    console.error('[AUTH] Login Exception:', err.message);
+    res.status(500).json({ error: 'Internal Server Error during authentication' }); 
   }
 });
 
