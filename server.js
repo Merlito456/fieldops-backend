@@ -60,12 +60,14 @@ async function initDatabase() {
 
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
+        vendor_id TEXT NOT NULL,
         site_id TEXT,
         sender_id TEXT,
         sender_name TEXT,
         role TEXT,
         content TEXT,
-        timestamp TIMESTAMPTZ DEFAULT NOW()
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        is_read BOOLEAN DEFAULT FALSE
       );
 
       CREATE TABLE IF NOT EXISTS tasks (
@@ -100,6 +102,11 @@ const mapVendor = (v) => {
 };
 
 // --- VENDOR AUTH ---
+app.get('/api/vendors', async (req, res) => {
+  const result = await pool.query('SELECT * FROM vendors ORDER BY full_name ASC');
+  res.json(result.rows.map(mapVendor));
+});
+
 app.post('/api/auth/vendor/register', async (req, res) => {
   const v = req.body;
   try {
@@ -156,10 +163,17 @@ app.delete('/api/sites/:id', async (req, res) => {
 });
 
 // --- MESSAGES ---
-app.get('/api/messages/:siteId', async (req, res) => {
+app.get('/api/messages', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM messages WHERE site_id = $1 ORDER BY timestamp ASC', [req.params.siteId]);
-    res.json(result.rows.map(m => ({ id: m.id, siteId: m.site_id, senderId: m.sender_id, senderName: m.sender_name, role: m.role, content: m.content, timestamp: m.timestamp })));
+    const result = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
+    res.json(result.rows.map(m => ({ id: m.id, vendorId: m.vendor_id, siteId: m.site_id, senderId: m.sender_id, senderName: m.sender_name, role: m.role, content: m.content, timestamp: m.timestamp, isRead: m.is_read })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/messages/:vendorId', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM messages WHERE vendor_id = $1 ORDER BY timestamp ASC', [req.params.vendorId]);
+    res.json(result.rows.map(m => ({ id: m.id, vendorId: m.vendor_id, siteId: m.site_id, senderId: m.sender_id, senderName: m.sender_name, role: m.role, content: m.content, timestamp: m.timestamp, isRead: m.is_read })));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -168,8 +182,8 @@ app.post('/api/messages', async (req, res) => {
   const id = `MSG-${Date.now()}`;
   try {
     await pool.query(
-      'INSERT INTO messages (id, site_id, sender_id, sender_name, role, content) VALUES ($1, $2, $3, $4, $5, $6)',
-      [id, m.siteId, m.senderId, m.senderName, m.role, m.content]
+      'INSERT INTO messages (id, vendor_id, site_id, sender_id, sender_name, role, content) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [id, m.vendorId, m.siteId || null, m.senderId, m.senderName, m.role, m.content]
     );
     res.json({ id, ...m, timestamp: new Date().toISOString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -188,7 +202,6 @@ app.post('/api/access/request', async (req, res) => {
 app.post('/api/access/checkin/:siteId', async (req, res) => {
   const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
   const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
-  // FIX: Corrected req.params.id to req.params.siteId
   await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.siteId]);
   res.json({ success: true, currentVisitor });
 });
@@ -245,6 +258,11 @@ app.post('/api/keys/return/:siteId', async (req, res) => {
 app.get('/api/tasks', async (req, res) => {
   const result = await pool.query('SELECT * FROM tasks ORDER BY scheduled_date ASC');
   res.json(result.rows);
+});
+
+app.get('/api/officers', async (req, res) => {
+   // Minimal mock response since FO registry is locally managed for now
+   res.json([{ id: 'FO-001', name: 'FO ADMIN', employeeId: 'ECE-001', department: 'Network' }]);
 });
 
 const path = require('path');
