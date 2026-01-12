@@ -101,7 +101,6 @@ const mapVendor = (v) => {
   };
 };
 
-// --- VENDOR AUTH ---
 app.get('/api/vendors', async (req, res) => {
   const result = await pool.query('SELECT * FROM vendors ORDER BY full_name ASC');
   res.json(result.rows.map(mapVendor));
@@ -130,7 +129,6 @@ app.post('/api/auth/vendor/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- SITES CRUD ---
 const mapSite = (s) => ({
   id: s.id, name: s.name, type: s.type, address: s.address, gpsCoordinates: s.gps_coordinates, caretaker: s.caretaker, caretakerContact: s.caretaker_contact, 
   keyStatus: s.key_status, accessAuthorized: s.access_authorized, keyAccessAuthorized: s.key_access_authorized, pendingVisitor: s.pending_visitor,
@@ -162,7 +160,7 @@ app.delete('/api/sites/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- MESSAGES ---
+// --- MESSAGES Refactored for is_read ---
 app.get('/api/messages', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
@@ -185,11 +183,17 @@ app.post('/api/messages', async (req, res) => {
       'INSERT INTO messages (id, vendor_id, site_id, sender_id, sender_name, role, content) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [id, m.vendorId, m.siteId || null, m.senderId, m.senderName, m.role, m.content]
     );
-    res.json({ id, ...m, timestamp: new Date().toISOString() });
+    res.json({ id, ...m, timestamp: new Date().toISOString(), isRead: false });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- OPERATIONAL ---
+app.patch('/api/messages/read/:vendorId', async (req, res) => {
+  try {
+    await pool.query('UPDATE messages SET is_read = TRUE WHERE vendor_id = $1 AND role = \'VENDOR\'', [req.params.vendorId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/access/request', async (req, res) => {
   const { siteId, ...visitorData } = req.body;
   const pendingVisitor = { ...visitorData, id: `REQ-${Date.now()}`, checkInTime: new Date().toISOString() };
@@ -261,7 +265,6 @@ app.get('/api/tasks', async (req, res) => {
 });
 
 app.get('/api/officers', async (req, res) => {
-   // Minimal mock response since FO registry is locally managed for now
    res.json([{ id: 'FO-001', name: 'FO ADMIN', employeeId: 'ECE-001', department: 'Network' }]);
 });
 
