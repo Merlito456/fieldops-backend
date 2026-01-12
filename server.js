@@ -2,6 +2,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const path = require('path');
 const app = express();
 
 app.use(cors());
@@ -24,7 +25,9 @@ async function initDatabase() {
   let client;
   try {
     client = await pool.connect();
-    // Create base tables
+    console.log('🔄 Verifying Database Schema...');
+    
+    // Core Table Structure
     await client.query(`
       CREATE TABLE IF NOT EXISTS sites (
         id TEXT PRIMARY KEY,
@@ -72,10 +75,11 @@ async function initDatabase() {
       );
     `);
 
-    // Patch for existing tables that might lack the is_read column
+    // Resiliency Patch: Ensure columns exist in case table was created previously without them
+    await client.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS vendor_id TEXT`);
     await client.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE`);
     
-    console.log('✅ System DB Ready & Patched.');
+    console.log('✅ System DB Ready and Patched.');
   } catch (err) {
     console.error('❌ DB_INIT_FAILURE:', err.message);
   } finally {
@@ -85,18 +89,19 @@ async function initDatabase() {
 
 initDatabase();
 
-app.get('/api/health', (req, res) => res.json({ status: 'operational' }));
+// --- API ENDPOINTS ---
 
-const mapVendor = (v) => {
-  if (!v) return null;
-  return {
-    id: v.id, username: v.username, fullName: v.full_name, company: v.company, contactNumber: v.contact_number, photo: v.photo_url, idNumber: v.id_number, specialization: v.specialization, verified: true, createdAt: v.created_at
-  };
-};
+app.get('/api/health', (req, res) => res.json({ status: 'operational', database: 'connected' }));
+
+const mapVendor = (v) => v ? ({
+  id: v.id, username: v.username, fullName: v.full_name, company: v.company, contactNumber: v.contact_number, photo: v.photo_url, idNumber: v.id_number, specialization: v.specialization, verified: true, createdAt: v.created_at
+}) : null;
 
 app.get('/api/vendors', async (req, res) => {
-  const result = await pool.query('SELECT * FROM vendors ORDER BY full_name ASC');
-  res.json(result.rows.map(mapVendor));
+  try {
+    const result = await pool.query('SELECT * FROM vendors ORDER BY full_name ASC');
+    res.json(result.rows.map(mapVendor));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/auth/vendor/register', async (req, res) => {
@@ -113,10 +118,8 @@ app.post('/api/auth/vendor/register', async (req, res) => {
 
 app.post('/api/auth/vendor/login', async (req, res) => {
   const { username, password } = req.body;
-  const upUsername = (username || '').toUpperCase();
-  const upPassword = (password || '').toUpperCase();
   try {
-    const result = await pool.query('SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', [upUsername, upPassword]);
+    const result = await pool.query('SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', [(username || '').toUpperCase(), (password || '').toUpperCase()]);
     if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid Credentials' });
     res.json(mapVendor(result.rows[0]));
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -130,8 +133,10 @@ const mapSite = (s) => ({
 });
 
 app.get('/api/sites', async (req, res) => {
-  const result = await pool.query('SELECT * FROM sites ORDER BY name ASC');
-  res.json(result.rows.map(mapSite));
+  try {
+    const result = await pool.query('SELECT * FROM sites ORDER BY name ASC');
+    res.json(result.rows.map(mapSite));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sites', async (req, res) => {
@@ -146,14 +151,7 @@ app.post('/api/sites', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/sites/:id', async (req, res) => {
-  try {
-    await pool.query('DELETE FROM sites WHERE id = $1', [req.params.id]);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// --- MESSAGES ---
+// --- MESSAGING HUB ---
 app.get('/api/messages/:vendorId', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM messages WHERE vendor_id = $1 ORDER BY timestamp ASC', [req.params.vendorId]);
@@ -163,22 +161,22 @@ app.get('/api/messages/:vendorId', async (req, res) => {
 
 app.post('/api/messages', async (req, res) => {
   const m = req.body;
-  const id = `MSG-${Date.now()}`;
   const vendorId = m.vendorId || m.vendor_id;
   
   if (!vendorId) {
-    console.error('❌ Rejecting message: No vendorId provided');
+    console.warn('⚠️ Rejected Message: vendorId missing in payload');
     return res.status(400).json({ error: 'vendorId is required' });
   }
   
   try {
+    const id = `MSG-${Date.now()}`;
     await pool.query(
       'INSERT INTO messages (id, vendor_id, site_id, sender_id, sender_name, role, content) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [id, vendorId, m.siteId || null, m.senderId, m.senderName, m.role, m.content]
     );
     res.json({ id, vendorId, ...m, timestamp: new Date().toISOString(), isRead: false });
   } catch (err) { 
-    console.error('❌ Message Save Error:', err);
+    console.error('❌ DB_INSERT_ERROR (Messages):', err.message);
     res.status(500).json({ error: err.message }); 
   }
 });
@@ -190,6 +188,7 @@ app.patch('/api/messages/read/:vendorId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// --- SITE OPERATIONS ---
 app.post('/api/access/request', async (req, res) => {
   const { siteId, ...visitorData } = req.body;
   const pendingVisitor = { ...visitorData, id: `REQ-${Date.now()}`, checkInTime: new Date().toISOString() };
@@ -200,25 +199,27 @@ app.post('/api/access/request', async (req, res) => {
 });
 
 app.post('/api/access/checkin/:siteId', async (req, res) => {
-  const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
-  const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
-  await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.siteId]);
-  res.json({ success: true, currentVisitor });
+  try {
+    const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
+    if (!siteResult.rows[0].pending_visitor) return res.status(400).json({ error: 'No pending visitor' });
+    const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
+    await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.siteId]);
+    res.json({ success: true, currentVisitor });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/access/authorize/:siteId', async (req, res) => {
-  await pool.query('UPDATE sites SET access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
-  res.json({ success: true });
+  try {
+    await pool.query('UPDATE sites SET access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/keys/authorize/:siteId', async (req, res) => {
-  await pool.query('UPDATE sites SET key_access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
-  res.json({ success: true });
-});
-
-app.post('/api/access/cancel/:siteId', async (req, res) => {
-  await pool.query('UPDATE sites SET pending_visitor = NULL, access_authorized = FALSE WHERE id = $1', [req.params.siteId]);
-  res.json({ success: true });
+  try {
+    await pool.query('UPDATE sites SET key_access_authorized = TRUE WHERE id = $1', [req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/keys/request', async (req, res) => {
@@ -231,42 +232,45 @@ app.post('/api/keys/request', async (req, res) => {
 });
 
 app.post('/api/keys/confirm/:siteId', async (req, res) => {
-  const siteResult = await pool.query('SELECT pending_key_log FROM sites WHERE id = $1', [req.params.siteId]);
-  const currentKeyLog = { ...siteResult.rows[0].pending_key_log, id: `KEY-${Date.now()}` };
-  await pool.query("UPDATE sites SET key_status = 'Borrowed', current_key_log = $1, pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $2", [JSON.stringify(currentKeyLog), req.params.siteId]);
-  res.json({ success: true, currentKeyLog });
+  try {
+    const siteResult = await pool.query('SELECT pending_key_log FROM sites WHERE id = $1', [req.params.siteId]);
+    const currentKeyLog = { ...siteResult.rows[0].pending_key_log, id: `KEY-${Date.now()}` };
+    await pool.query("UPDATE sites SET key_status = 'Borrowed', current_key_log = $1, pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $2", [JSON.stringify(currentKeyLog), req.params.siteId]);
+    res.json({ success: true, currentKeyLog });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/access/checkout/:siteId', async (req, res) => {
   const { exitPhoto, name, time, ...rest } = req.body;
-  const siteResult = await pool.query('SELECT current_visitor, visitor_history FROM sites WHERE id = $1', [req.params.siteId]);
-  const history = siteResult.rows[0].visitor_history || [];
-  const finishedVisitor = { ...siteResult.rows[0].current_visitor, exitPhoto, rocLogoutName: name, rocLogoutTime: time, ...rest, checkOutTime: new Date().toISOString() };
-  await pool.query('UPDATE sites SET current_visitor = NULL, visitor_history = $1 WHERE id = $2', [JSON.stringify([finishedVisitor, ...history].slice(0, 50)), req.params.siteId]);
-  res.json({ success: true });
+  try {
+    const siteResult = await pool.query('SELECT current_visitor, visitor_history FROM sites WHERE id = $1', [req.params.siteId]);
+    const history = siteResult.rows[0].visitor_history || [];
+    const finishedVisitor = { ...siteResult.rows[0].current_visitor, exitPhoto, rocLogoutName: name, rocLogoutTime: time, ...rest, checkOutTime: new Date().toISOString() };
+    await pool.query('UPDATE sites SET current_visitor = NULL, visitor_history = $1 WHERE id = $2', [JSON.stringify([finishedVisitor, ...history].slice(0, 50)), req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/keys/return/:siteId', async (req, res) => {
   const { returnPhoto } = req.body;
-  const siteResult = await pool.query('SELECT current_key_log, key_history FROM sites WHERE id = $1', [req.params.siteId]);
-  const history = siteResult.rows[0].key_history || [];
-  const finishedLog = { ...siteResult.rows[0].current_key_log, returnTime: new Date().toISOString(), returnPhoto };
-  await pool.query("UPDATE sites SET key_status = 'Available', current_key_log = NULL, key_history = $1 WHERE id = $2", [JSON.stringify([finishedLog, ...history].slice(0, 50)), req.params.siteId]);
-  res.json({ success: true });
+  try {
+    const siteResult = await pool.query('SELECT current_key_log, key_history FROM sites WHERE id = $1', [req.params.siteId]);
+    const history = siteResult.rows[0].key_history || [];
+    const finishedLog = { ...siteResult.rows[0].current_key_log, returnTime: new Date().toISOString(), returnPhoto };
+    await pool.query("UPDATE sites SET key_status = 'Available', current_key_log = NULL, key_history = $1 WHERE id = $2", [JSON.stringify([finishedLog, ...history].slice(0, 50)), req.params.siteId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/tasks', async (req, res) => {
-  const result = await pool.query('SELECT * FROM tasks ORDER BY scheduled_date ASC');
-  res.json(result.rows);
+  try {
+    const result = await pool.query('SELECT * FROM tasks ORDER BY scheduled_date ASC');
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/officers', async (req, res) => {
-   res.json([{ id: 'FO-001', name: 'FO ADMIN', employeeId: 'ECE-001', department: 'Network' }]);
-});
-
-const path = require('path');
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => { if (!req.path.startsWith('/api')) res.sendFile(path.join(__dirname, 'dist', 'index.html')); });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`API Node Active: ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 FieldOps API Hub Active: ${PORT}`));
