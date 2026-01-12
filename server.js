@@ -160,7 +160,7 @@ app.delete('/api/sites/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// --- MESSAGES Refactored for is_read ---
+// --- MESSAGES ---
 app.get('/api/messages', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
@@ -178,13 +178,19 @@ app.get('/api/messages/:vendorId', async (req, res) => {
 app.post('/api/messages', async (req, res) => {
   const m = req.body;
   const id = `MSG-${Date.now()}`;
+  const vendorId = m.vendorId || m.vendor_id; // Robustness for property naming
+  if (!vendorId) return res.status(400).json({ error: 'vendorId is required' });
+  
   try {
     await pool.query(
       'INSERT INTO messages (id, vendor_id, site_id, sender_id, sender_name, role, content) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [id, m.vendorId, m.siteId || null, m.senderId, m.senderName, m.role, m.content]
+      [id, vendorId, m.siteId || null, m.senderId, m.senderName, m.role, m.content]
     );
-    res.json({ id, ...m, timestamp: new Date().toISOString(), isRead: false });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json({ id, vendorId, ...m, timestamp: new Date().toISOString(), isRead: false });
+  } catch (err) { 
+    console.error('Message Error:', err);
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 app.patch('/api/messages/read/:vendorId', async (req, res) => {
