@@ -73,6 +73,26 @@ async function initDatabase() {
         timestamp TIMESTAMPTZ DEFAULT NOW(),
         is_read BOOLEAN DEFAULT FALSE
       );
+
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        site_id TEXT,
+        assigned_to TEXT,
+        status TEXT DEFAULT 'Pending',
+        priority TEXT,
+        type TEXT,
+        scheduled_date TEXT,
+        estimated_hours NUMERIC,
+        actual_hours NUMERIC,
+        materials_required JSONB DEFAULT '[]'::jsonb,
+        safety_requirements JSONB DEFAULT '[]'::jsonb,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        task_initiation_photo TEXT
+      );
     `);
 
     // Resiliency Patch: Ensure columns exist in case table was created previously without them
@@ -151,7 +171,21 @@ app.post('/api/sites', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.delete('/api/sites/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM sites WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --- MESSAGING HUB ---
+app.get('/api/messages', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
+    res.json(result.rows.map(m => ({ id: m.id, vendorId: m.vendor_id, siteId: m.site_id, senderId: m.sender_id, senderName: m.sender_name, role: m.role, content: m.content, timestamp: m.timestamp, isRead: m.is_read })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/messages/:vendorId', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM messages WHERE vendor_id = $1 ORDER BY timestamp ASC', [req.params.vendorId]);
@@ -265,8 +299,29 @@ app.post('/api/keys/return/:siteId', async (req, res) => {
 app.get('/api/tasks', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM tasks ORDER BY scheduled_date ASC');
-    res.json(result.rows);
+    res.json(result.rows.map(t => ({
+      id: t.id, title: t.title, description: t.description, siteId: t.site_id, assignedTo: t.assigned_to, status: t.status, priority: t.priority,
+      type: t.type, scheduledDate: t.scheduled_date, estimatedHours: t.estimated_hours, actualHours: t.actual_hours,
+      materialsRequired: t.materials_required || [], safetyRequirements: t.safety_requirements || [], createdAt: t.created_at,
+      updatedAt: t.updated_at, completedAt: t.completed_at, taskInitiationPhoto: t.task_initiation_photo
+    })));
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/tasks', async (req, res) => {
+  const t = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO tasks (id, title, description, site_id, assigned_to, status, priority, type, scheduled_date, estimated_hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [t.id, t.title, t.description, t.siteId, t.assignedTo, t.status, t.priority, t.type, t.scheduledDate, t.estimatedHours]
+    );
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/officers', async (req, res) => {
+   res.json([{ id: 'FO-001', name: 'FO ADMIN', employeeId: 'ECE-001', department: 'Network' }]);
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
