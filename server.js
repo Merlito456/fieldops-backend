@@ -147,8 +147,8 @@ app.post('/api/auth/vendor/login', async (req, res) => {
 
 const mapSite = (s) => ({
   id: s.id, name: s.name, type: s.type, address: s.address, gpsCoordinates: s.gps_coordinates, caretaker: s.caretaker, caretakerContact: s.caretaker_contact, 
-  keyStatus: s.key_status, accessAuthorized: s.access_authorized, keyAccessAuthorized: s.key_access_authorized, pendingVisitor: s.pending_visitor,
-  currentVisitor: s.current_visitor, visitorHistory: s.visitor_history || [], pendingKeyLog: s.pending_key_log, currentKeyLog: s.current_key_log, 
+  keyStatus: s.key_status, accessAuthorized: s.access_authorized, keyAccessAuthorized: s.key_access_authorized, pending_visitor: s.pending_visitor,
+  current_visitor: s.current_visitor, visitorHistory: s.visitor_history || [], pending_key_log: s.pending_key_log, current_key_log: s.current_key_log, 
   keyHistory: s.key_history || [], nextMaintenanceDate: s.next_maintenance_date
 });
 
@@ -275,11 +275,12 @@ app.post('/api/keys/confirm/:siteId', async (req, res) => {
 });
 
 app.post('/api/access/checkout/:siteId', async (req, res) => {
-  const { exitPhoto, name, time, ...rest } = req.body;
+  // Use rest spread to catch all fields (including rocLogoutName/Time) to match SiteVisitor interface
+  const { exitPhoto, ...rest } = req.body;
   try {
     const siteResult = await pool.query('SELECT current_visitor, visitor_history FROM sites WHERE id = $1', [req.params.siteId]);
     const history = siteResult.rows[0].visitor_history || [];
-    const finishedVisitor = { ...siteResult.rows[0].current_visitor, exitPhoto, rocLogoutName: name, rocLogoutTime: time, ...rest, checkOutTime: new Date().toISOString() };
+    const finishedVisitor = { ...siteResult.rows[0].current_visitor, exitPhoto, ...rest, checkOutTime: new Date().toISOString() };
     await pool.query('UPDATE sites SET current_visitor = NULL, visitor_history = $1 WHERE id = $2', [JSON.stringify([finishedVisitor, ...history].slice(0, 50)), req.params.siteId]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
