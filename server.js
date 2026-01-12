@@ -92,63 +92,35 @@ initDatabase();
 
 app.get('/api/health', (req, res) => res.json({ status: 'operational' }));
 
-// Helper to map DB vendor row to frontend camelCase VendorProfile
 const mapVendor = (v) => {
   if (!v) return null;
   return {
-    id: v.id,
-    username: v.username,
-    fullName: v.full_name,
-    company: v.company,
-    contactNumber: v.contact_number,
-    photo: v.photo_url,
-    idNumber: v.id_number,
-    specialization: v.specialization,
-    verified: true,
-    createdAt: v.created_at
+    id: v.id, username: v.username, fullName: v.full_name, company: v.company, contactNumber: v.contact_number, photo: v.photo_url, idNumber: v.id_number, specialization: v.specialization, verified: true, createdAt: v.created_at
   };
 };
 
-// --- VENDOR AUTH (Case Insensitive) ---
+// --- VENDOR AUTH ---
 app.post('/api/auth/vendor/register', async (req, res) => {
   const v = req.body;
   try {
-    const username = (v.username || '').trim().toUpperCase();
-    const password = (v.password || '').trim().toUpperCase();
     const result = await pool.query(
       `INSERT INTO vendors (id, username, password, full_name, company, contact_number, photo_url, id_number, specialization) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [v.id, username, password, v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
+      [v.id, (v.username || '').toUpperCase(), (v.password || '').toUpperCase(), v.fullName, v.company, v.contactNumber, v.photo, v.idNumber, v.specialization]
     );
     res.json(mapVendor(result.rows[0]));
-  } catch (err) { 
-    console.error('Registration error:', err.message);
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/auth/vendor/login', async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
-  
-  const upUsername = username.trim().toUpperCase();
-  const upPassword = password.trim().toUpperCase();
-
+  const upUsername = (username || '').toUpperCase();
+  const upPassword = (password || '').toUpperCase();
   try {
-    const result = await pool.query(
-      'SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', 
-      [upUsername, upPassword]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid Credentials' });
-    }
-    
+    const result = await pool.query('SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', [upUsername, upPassword]);
+    if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid Credentials' });
     res.json(mapVendor(result.rows[0]));
-  } catch (err) { 
-    console.error('[AUTH] Login Exception:', err.message);
-    res.status(500).json({ error: 'Internal Server Error during authentication' }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // --- SITES CRUD ---
@@ -171,17 +143,6 @@ app.post('/api/sites', async (req, res) => {
       `INSERT INTO sites (id, name, type, address, gps_coordinates, caretaker, caretaker_contact) 
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [s.id, s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact]
-    );
-    res.json(mapSite(result.rows[0]));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.put('/api/sites/:id', async (req, res) => {
-  const s = req.body;
-  try {
-    const result = await pool.query(
-      `UPDATE sites SET name=$1, type=$2, address=$3, gps_coordinates=$4, caretaker=$5, caretaker_contact=$6 WHERE id=$7 RETURNING *`,
-      [s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact, req.params.id]
     );
     res.json(mapSite(result.rows[0]));
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -224,13 +185,12 @@ app.post('/api/access/request', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/keys/request', async (req, res) => {
-  const { siteId, ...logData } = req.body;
-  const pendingKeyLog = { ...logData, id: `KEYREQ-${Date.now()}`, borrowTime: new Date().toISOString() };
-  try {
-    await pool.query('UPDATE sites SET pending_key_log = $1, key_access_authorized = FALSE WHERE id = $2', [JSON.stringify(pendingKeyLog), siteId]);
-    res.json({ success: true, pendingKeyLog });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+app.post('/api/access/checkin/:siteId', async (req, res) => {
+  const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
+  const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
+  // FIX: Corrected req.params.id to req.params.siteId
+  await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.siteId]);
+  res.json({ success: true, currentVisitor });
 });
 
 app.post('/api/access/authorize/:siteId', async (req, res) => {
@@ -248,16 +208,13 @@ app.post('/api/access/cancel/:siteId', async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/keys/cancel/:siteId', async (req, res) => {
-  await pool.query('UPDATE sites SET pending_key_log = NULL, key_access_authorized = FALSE WHERE id = $1', [req.params.siteId]);
-  res.json({ success: true });
-});
-
-app.post('/api/access/checkin/:siteId', async (req, res) => {
-  const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
-  const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
-  await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.id]);
-  res.json({ success: true, currentVisitor });
+app.post('/api/keys/request', async (req, res) => {
+  const { siteId, ...logData } = req.body;
+  const pendingKeyLog = { ...logData, id: `KEYREQ-${Date.now()}`, borrowTime: new Date().toISOString() };
+  try {
+    await pool.query('UPDATE sites SET pending_key_log = $1, key_access_authorized = FALSE WHERE id = $2', [JSON.stringify(pendingKeyLog), siteId]);
+    res.json({ success: true, pendingKeyLog });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/keys/confirm/:siteId', async (req, res) => {
