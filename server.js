@@ -135,26 +135,63 @@ app.post('/api/auth/vendor/login', async (req, res) => {
   const upPassword = password.trim().toUpperCase();
 
   try {
-    console.log(`[AUTH] Login attempt for user: ${upUsername}`);
-    
-    // Robust case-insensitive comparison using UPPER() at DB level
     const result = await pool.query(
       'SELECT * FROM vendors WHERE UPPER(username) = $1 AND UPPER(password) = $2', 
       [upUsername, upPassword]
     );
     
     if (result.rows.length === 0) {
-      console.warn(`[AUTH] Failed login for user: ${upUsername}`);
       return res.status(401).json({ error: 'Invalid Credentials' });
     }
     
-    const vendor = mapVendor(result.rows[0]);
-    console.log(`[AUTH] Successful login: ${upUsername} (${vendor.id})`);
-    res.json(vendor);
+    res.json(mapVendor(result.rows[0]));
   } catch (err) { 
     console.error('[AUTH] Login Exception:', err.message);
     res.status(500).json({ error: 'Internal Server Error during authentication' }); 
   }
+});
+
+// --- SITES CRUD ---
+const mapSite = (s) => ({
+  id: s.id, name: s.name, type: s.type, address: s.address, gpsCoordinates: s.gps_coordinates, caretaker: s.caretaker, caretakerContact: s.caretaker_contact, 
+  keyStatus: s.key_status, accessAuthorized: s.access_authorized, keyAccessAuthorized: s.key_access_authorized, pendingVisitor: s.pending_visitor,
+  currentVisitor: s.current_visitor, visitorHistory: s.visitor_history || [], pendingKeyLog: s.pending_key_log, currentKeyLog: s.current_key_log, 
+  keyHistory: s.key_history || [], nextMaintenanceDate: s.next_maintenance_date
+});
+
+app.get('/api/sites', async (req, res) => {
+  const result = await pool.query('SELECT * FROM sites ORDER BY name ASC');
+  res.json(result.rows.map(mapSite));
+});
+
+app.post('/api/sites', async (req, res) => {
+  const s = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO sites (id, name, type, address, gps_coordinates, caretaker, caretaker_contact) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [s.id, s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact]
+    );
+    res.json(mapSite(result.rows[0]));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/sites/:id', async (req, res) => {
+  const s = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE sites SET name=$1, type=$2, address=$3, gps_coordinates=$4, caretaker=$5, caretaker_contact=$6 WHERE id=$7 RETURNING *`,
+      [s.name, s.type, s.address, s.gpsCoordinates, s.caretaker, s.caretakerContact, req.params.id]
+    );
+    res.json(mapSite(result.rows[0]));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/sites/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM sites WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // --- MESSAGES ---
@@ -219,7 +256,7 @@ app.post('/api/keys/cancel/:siteId', async (req, res) => {
 app.post('/api/access/checkin/:siteId', async (req, res) => {
   const siteResult = await pool.query('SELECT pending_visitor FROM sites WHERE id = $1', [req.params.siteId]);
   const currentVisitor = { ...siteResult.rows[0].pending_visitor, id: `VIS-${Date.now()}` };
-  await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.siteId]);
+  await pool.query('UPDATE sites SET current_visitor = $1, pending_visitor = NULL, access_authorized = FALSE WHERE id = $2', [JSON.stringify(currentVisitor), req.params.id]);
   res.json({ success: true, currentVisitor });
 });
 
@@ -246,18 +283,6 @@ app.post('/api/keys/return/:siteId', async (req, res) => {
   const finishedLog = { ...siteResult.rows[0].current_key_log, returnTime: new Date().toISOString(), returnPhoto };
   await pool.query("UPDATE sites SET key_status = 'Available', current_key_log = NULL, key_history = $1 WHERE id = $2", [JSON.stringify([finishedLog, ...history].slice(0, 50)), req.params.siteId]);
   res.json({ success: true });
-});
-
-const mapSite = (s) => ({
-  id: s.id, name: s.name, type: s.type, address: s.address, gpsCoordinates: s.gps_coordinates, caretaker: s.caretaker, caretakerContact: s.caretaker_contact, 
-  keyStatus: s.key_status, accessAuthorized: s.access_authorized, keyAccessAuthorized: s.key_access_authorized, pendingVisitor: s.pending_visitor,
-  currentVisitor: s.current_visitor, visitorHistory: s.visitor_history || [], pendingKeyLog: s.pending_key_log, currentKeyLog: s.current_key_log, 
-  keyHistory: s.key_history || [], nextMaintenanceDate: s.next_maintenance_date
-});
-
-app.get('/api/sites', async (req, res) => {
-  const result = await pool.query('SELECT * FROM sites ORDER BY name ASC');
-  res.json(result.rows.map(mapSite));
 });
 
 app.get('/api/tasks', async (req, res) => {
