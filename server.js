@@ -24,6 +24,7 @@ async function initDatabase() {
   let client;
   try {
     client = await pool.connect();
+    // Create base tables
     await client.query(`
       CREATE TABLE IF NOT EXISTS sites (
         id TEXT PRIMARY KEY,
@@ -69,20 +70,12 @@ async function initDatabase() {
         timestamp TIMESTAMPTZ DEFAULT NOW(),
         is_read BOOLEAN DEFAULT FALSE
       );
-
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
-        assigned_to TEXT,
-        status TEXT DEFAULT 'Pending',
-        priority TEXT,
-        type TEXT,
-        scheduled_date DATE
-      );
     `);
-    console.log('✅ System DB Ready.');
+
+    // Patch for existing tables that might lack the is_read column
+    await client.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE`);
+    
+    console.log('✅ System DB Ready & Patched.');
   } catch (err) {
     console.error('❌ DB_INIT_FAILURE:', err.message);
   } finally {
@@ -161,13 +154,6 @@ app.delete('/api/sites/:id', async (req, res) => {
 });
 
 // --- MESSAGES ---
-app.get('/api/messages', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
-    res.json(result.rows.map(m => ({ id: m.id, vendorId: m.vendor_id, siteId: m.site_id, senderId: m.sender_id, senderName: m.sender_name, role: m.role, content: m.content, timestamp: m.timestamp, isRead: m.is_read })));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 app.get('/api/messages/:vendorId', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM messages WHERE vendor_id = $1 ORDER BY timestamp ASC', [req.params.vendorId]);
@@ -178,8 +164,12 @@ app.get('/api/messages/:vendorId', async (req, res) => {
 app.post('/api/messages', async (req, res) => {
   const m = req.body;
   const id = `MSG-${Date.now()}`;
-  const vendorId = m.vendorId || m.vendor_id; // Robustness for property naming
-  if (!vendorId) return res.status(400).json({ error: 'vendorId is required' });
+  const vendorId = m.vendorId || m.vendor_id;
+  
+  if (!vendorId) {
+    console.error('❌ Rejecting message: No vendorId provided');
+    return res.status(400).json({ error: 'vendorId is required' });
+  }
   
   try {
     await pool.query(
@@ -188,7 +178,7 @@ app.post('/api/messages', async (req, res) => {
     );
     res.json({ id, vendorId, ...m, timestamp: new Date().toISOString(), isRead: false });
   } catch (err) { 
-    console.error('Message Error:', err);
+    console.error('❌ Message Save Error:', err);
     res.status(500).json({ error: err.message }); 
   }
 });
